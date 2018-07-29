@@ -179,41 +179,51 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 }
 
 func makePosts(results []Post, CSRFToken string, allComments bool) ([]Post, error) {
+	var us []User
+	var comments []Comment
+
+	// convert []int -> []interface{}
+	postIds := make([]interface{}, len(results))
+	s := []string{}
+	for i, p := range results {
+		postIds[i] = p.ID
+		s = append(s, "?")
+	}
+	placeholder := strings.Join(s, ", ")
+
+	err := db.Select(&comments, "SELECT * FROM `comments` WHERE `post_id` IN ("+placeholder+") ORDER BY `created_at` DESC", postIds...)
+	if err != nil {
+		return nil, err
+	}
+
+	err = db.Select(&us, "SELECT * FROM `users`")
+	if err != nil {
+		return nil, err
+	}
+
+	users := map[int]User{}
+	for _, u := range us {
+		users[u.ID] = u
+	}
+
+	cc := map[int]int{}
+	pc := map[int][]Comment{}
+	for _, c := range comments {
+		cc[c.PostID]++
+		if allComments || (len(pc[c.PostID]) < 3) {
+			c.User = users[c.UserID]
+			pc[c.PostID] = append(pc[c.PostID], c)
+		}
+	}
+
 	var posts []Post
-
 	for _, p := range results {
-		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
-		if !allComments {
-			query += " LIMIT 3"
-		}
-		var comments []Comment
-		cerr := db.Select(&comments, query, p.ID)
-		if cerr != nil {
-			return nil, cerr
-		}
-
-		for i := 0; i < len(comments); i++ {
-			uerr := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-			if uerr != nil {
-				return nil, uerr
-			}
-		}
+		p.CommentCount = cc[p.ID]
+		p.Comments = pc[p.ID]
 
 		// reverse
-		for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
-			comments[i], comments[j] = comments[j], comments[i]
-		}
-
-		p.Comments = comments
-
-		perr := db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
-		if perr != nil {
-			return nil, perr
+		for i, j := 0, len(p.Comments)-1; i < j; i, j = i+1, j-1 {
+			p.Comments[i], p.Comments[j] = p.Comments[j], p.Comments[i]
 		}
 
 		p.CSRFToken = CSRFToken
